@@ -1,1 +1,229 @@
 
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Digital Image Forensics Toolkit</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#0b1220;color:#e5edf8;font-family:Arial,sans-serif}
+header{background:#111d32;padding:24px 16px;border-bottom:2px solid #20c9a6}
+main{max-width:900px;margin:auto;padding:18px}
+h1{font-size:25px;color:#40e0bd;margin:0 0 10px}
+p{line-height:1.6;color:#bdcbe0}
+.card{background:#142239;border:1px solid #2b405d;border-radius:12px;padding:17px;margin:16px 0}
+button{background:#12b99a;color:#071a20;border:0;border-radius:8px;padding:12px 16px;font-weight:bold;margin:6px 4px 6px 0}
+input{max-width:100%;padding:10px;margin:8px 0}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#08101d;padding:12px;border-radius:8px;color:#b8f6e9}
+img{max-width:100%;max-height:280px;object-fit:contain;margin-top:10px}
+.small{font-size:13px;color:#9fb0c8}
+</style>
+</head>
+<body>
+<header>
+<h1>Digital Image Forensics Toolkit</h1>
+<p>Inspect image files, calculate hashes and examine basic file indicators.</p>
+</header>
+<main>
+<div class="card">
+<h2>1. Select an image</h2>
+<input type="file" id="file" accept="image/*,.bin,.dat">
+<br><button onclick="analyze()">Analyze File</button>
+<button onclick="clearAll()">Clear</button>
+<div id="preview"></div>
+</div>
+<div class="card">
+<h2>2. File Analysis Report</h2>
+<pre id="report">Choose a file to begin.</pre>
+<button onclick="downloadReport()">Download Report</button>
+</div>
+<div class="card">
+<h2>3. Compare Two Images</h2>
+<p>Select two images to compare their dimensions and perceptual hashes. Similar hashes can indicate visual similarity but do not prove that images are identical.</p>
+<input type="file" id="imgA" accept="image/*">
+<input type="file" id="imgB" accept="image/*">
+<br><button onclick="compareImages()">Compare Images</button>
+<pre id="comparison">Choose two images to compare.</pre>
+</div>
+<p class="small">Educational tool. Results are preliminary indicators, not proof of tampering or steganography. Files are processed in your browser; this page does not upload them to a server. Preserve original evidence and work on copies.</p>
+</main>
+<script>
+let lastReport = "";
+const $ = id => document.getElementById(id);
+
+async function sha256(buffer) {
+  if (!crypto.subtle) throw new Error("Secure browser context required for SHA-256.");
+  const digest = await crypto.subtle.digest("SHA-256", buffer);
+  return [...new Uint8Array(digest)]
+    .map(b => b.toString(16).padStart(2,"0")).join("");
+}
+
+function signature(bytes) {
+  const starts = (a) => a.every((v,i) => bytes[i] === v);
+  if (starts([255,216,255])) return "JPEG";
+  if (starts([137,80,78,71,13,10,26,10])) return "PNG";
+  if (starts([71,73,70,56])) return "GIF";
+  if (starts([66,77])) return "BMP";
+  if (starts([82,73,70,70]) &&
+      String.fromCharCode(...bytes.slice(8,12)) === "WEBP") return "WebP";
+  if (starts([73,73,42,0]) || starts([77,77,0,42])) return "TIFF";
+  return "Unknown or unsupported";
+}
+
+async function analyze() {
+  const f = $("file").files[0];
+  if (!f) { alert("Choose a file first."); return; }
+  $("report").textContent = "Analyzing...";
+  $("preview").replaceChildren();
+  try {
+    const buffer = await f.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    const detected = signature(bytes);
+    const hash = await sha256(buffer);
+    let dimensions = "Not available";
+    if (f.type.startsWith("image/")) {
+      const url = URL.createObjectURL(f);
+      const im = new Image();
+      im.onload = () => {
+        dimensions = im.naturalWidth + " × " + im.naturalHeight;
+        const p = document.createElement("img");
+        p.src = url; p.alt = "Selected image preview";
+        $("preview").appendChild(p);
+        $("report").textContent = lastReport =
+          buildReport(f, detected, hash, dimensions, bytes);
+      };
+      im.onerror = () => {
+        URL.revokeObjectURL(url);
+        $("report").textContent = lastReport =
+          buildReport(f, detected, hash, dimensions, bytes);
+      };
+      im.src = url;
+    } else {
+      $("report").textContent = lastReport =
+        buildReport(f, detected, hash, dimensions, bytes);
+    }
+  } catch (e) {
+    $("report").textContent = "Analysis error: " + e.message;
+  }
+}
+
+function buildReport(f, detected, hash, dimensions, bytes) {
+  const signatures = [
+    {name:"JPEG", sig:[255,216,255]},
+    {name:"PNG", sig:[137,80,78,71,13,10,26,10]},
+    {name:"GIF", sig:[71,73,70,56]},
+    {name:"PDF", sig:[37,80,68,70]},
+    {name:"ZIP", sig:[80,75,3,4]},
+    {name:"GZIP", sig:[31,139]},
+    {name:"7-Zip", sig:[55,122,188,175,39,28]}
+  ];
+  let embedded = [];
+  for (let i=1;i<bytes.length-8;i++) {
+    for (const s of signatures) {
+      if (s.sig.every((v,j)=>bytes[i+j]===v)) {
+        embedded.push(s.name+" signature at byte "+i);
+        break;
+      }
+    }
+  }
+  const ascii = [];
+  let run = "";
+  for (const b of bytes) {
+    if (b >= 32 && b <= 126) run += String.fromCharCode(b);
+    else {
+      if (run.length >= 6) ascii.push(run);
+      run = "";
+    }
+  }
+  if (run.length >= 6) ascii.push(run);
+  const info = [
+    "DIGITAL IMAGE FORENSICS REPORT",
+    "Generated: " + new Date().toISOString(),
+    "Filename: " + f.name,
+    "File size: " + f.size + " bytes",
+    "Browser MIME type: " + (f.type || "Unknown"),
+    "Detected signature: " + detected,
+    "Image dimensions: " + dimensions,
+    "SHA-256: " + hash,
+    "",
+    "Embedded signatures (possible indicators):",
+    ...(embedded.length ? embedded.slice(0,100) : ["None detected"]),
+    "",
+    "Printable strings (first 80):",
+    ...(ascii.length ? ascii.slice(0,80) : ["None found"]),
+    "",
+    "Caution: embedded signatures and strings can occur in legitimate files."
+  ];
+  return info.join("\n");
+}
+
+function loadImage(file) {
+  return new Promise((resolve,reject)=>{
+    if (!file) return reject(new Error("Select both images."));
+    const url = URL.createObjectURL(file);
+    const im = new Image();
+    im.onload = ()=>resolve({im,url});
+    im.onerror = ()=>{URL.revokeObjectURL(url);reject(new Error("Could not read an image."));};
+    im.src = url;
+  });
+}
+
+async function dHash(file) {
+  const {im,url} = await loadImage(file);
+  const c = document.createElement("canvas");
+  c.width = 9; c.height = 8;
+  const ctx = c.getContext("2d",{willReadFrequently:true});
+  ctx.drawImage(im,0,0,9,8);
+  URL.revokeObjectURL(url);
+  const d = ctx.getImageData(0,0,9,8).data;
+  let bits = "";
+  for(let y=0;y<8;y++) for(let x=0;x<8;x++){
+    const a = d[(y*9+x)*4]*.299+d[(y*9+x)*4+1]*.587+d[(y*9+x)*4+2]*.114;
+    const b = d[(y*9+x+1)*4]*.299+d[(y*9+x+1)*4+1]*.587+d[(y*9+x+1)*4+2]*.114;
+    bits += a>b ? "1":"0";
+  }
+  return bits;
+}
+
+async function compareImages() {
+  try {
+    const a = $("imgA").files[0], b = $("imgB").files[0];
+    if (!a || !b) { alert("Select two images."); return; }
+    $("comparison").textContent = "Comparing...";
+    const [ha,hb] = await Promise.all([dHash(a),dHash(b)]);
+    let distance = 0;
+    for(let i=0;i<ha.length;i++) if(ha[i]!==hb[i]) distance++;
+    $("comparison").textContent =
+      "Image A: "+a.name+"\nImage B: "+b.name+
+      "\nPerceptual hash A: "+ha+
+      "\nPerceptual hash B: "+hb+
+      "\nHash differences: "+distance+" / 64"+
+      "\nApproximate similarity: "+((64-distance)/64*100).toFixed(1)+"%"+
+      "\n\nThis is a simple visual comparison, not a forensic conclusion.";
+  } catch(e) {
+    $("comparison").textContent = e.message;
+  }
+}
+
+function downloadReport() {
+  if (!lastReport) { alert("Analyze a file first."); return; }
+  const blob = new Blob([lastReport],{type:"text/plain"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href=url; a.download="image-forensics-report.txt"; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function clearAll() {
+  $("file").value="";
+  $("preview").replaceChildren();
+  $("report").textContent="Choose a file to begin.";
+  $("comparison").textContent="Choose two images to compare.";
+  $("imgA").value=""; $("imgB").value="";
+  lastReport="";
+}
+</script>
+</body>
+</html>
